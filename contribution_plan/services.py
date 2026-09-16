@@ -1,10 +1,27 @@
 import json
+import random
+from datetime import date
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.contrib.auth.models import AnonymousUser
 from django.forms.models import model_to_dict
 from contribution_plan.models import ContributionPlan as ContributionPlanModel, ContributionPlanBundle as ContributionPlanBundleModel, \
     ContributionPlanBundleDetails as ContributionPlanBundleDetailsModel, PaymentPlan as PaymentPlanModel
+
+
+CODE_RANDOM_DIGITS = 5
+CODE_GENERATION_ATTEMPTS = 20
+
+
+def generate_unique_payment_plan_code(model, current_date=None):
+    """Build a `<year><random 5-digit suffix>` code, retrying on collision."""
+    year = (current_date or date.today()).year
+    for _ in range(CODE_GENERATION_ATTEMPTS):
+        suffix = random.randint(0, 10 ** CODE_RANDOM_DIGITS - 1)
+        code = f"{year}{suffix:0{CODE_RANDOM_DIGITS}d}"
+        if not model.objects.filter(code=code, is_deleted=False).exists():
+            return code
+    raise ValueError("Unable to generate a unique payment plan code, please retry.")
 
 
 def check_authentication(function):
@@ -256,6 +273,11 @@ class PaymentPlan(object):
     @check_authentication
     def create(self, payment_plan):
         try:
+            if not payment_plan.get('code'):
+                payment_plan = {
+                    **payment_plan,
+                    'code': generate_unique_payment_plan_code(PaymentPlanModel),
+                }
             pp = PaymentPlanModel(**payment_plan)
             pp.save(user=self.user)
             uuid_string = str(pp.id)

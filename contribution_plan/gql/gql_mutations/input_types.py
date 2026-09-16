@@ -91,7 +91,7 @@ class ContributionPlanBundleDetailsReplaceInputType(ReplaceInputType):
 
 
 class PaymentPlanInputType(ContributionPlanInputType):
-    pass
+    code = graphene.String(required=False, max_length=32)
 
 
 class PaymentPlanUpdateInputType(ContributionPlanUpdateInputType):

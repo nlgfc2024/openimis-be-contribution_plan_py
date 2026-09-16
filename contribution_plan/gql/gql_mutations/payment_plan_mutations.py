@@ -4,7 +4,7 @@ from core.gql.gql_mutations import DeleteInputType
 from core.gql.gql_mutations.base_mutation import BaseMutation, BaseDeleteMutation, BaseReplaceMutation, \
     BaseHistoryModelCreateMutationMixin, BaseHistoryModelUpdateMutationMixin, \
     BaseHistoryModelDeleteMutationMixin, BaseHistoryModelReplaceMutationMixin
-from contribution_plan.services import PaymentPlan as PaymentPlanService
+from contribution_plan.services import PaymentPlan as PaymentPlanService, generate_unique_payment_plan_code
 from contribution_plan.gql.gql_mutations import PaymentPlanInputType, PaymentPlanUpdateInputType, \
     PaymentPlanReplaceInputType
 from contribution_plan.apps import ContributionPlanConfig
@@ -21,6 +21,8 @@ class CreatePaymentPlanMutation(BaseHistoryModelCreateMutationMixin, BaseMutatio
 
     @classmethod
     def create_object(cls, user, object_data):
+        if not object_data.get('code'):
+            object_data['code'] = generate_unique_payment_plan_code(cls._model)
         benefit_plan_type__model = object_data.pop('benefit_plan_type__model', None)
         if benefit_plan_type__model:
             content_type = ContentType.objects.get(model=benefit_plan_type__model.lower())
@@ -39,7 +41,7 @@ class CreatePaymentPlanMutation(BaseHistoryModelCreateMutationMixin, BaseMutatio
         if type(user) is AnonymousUser or not user.id or not user.has_perms(
                 ContributionPlanConfig.gql_mutation_create_paymentplan_perms):
             raise ValidationError(_("mutation.authentication_required"))
-        if PaymentPlanService.check_unique_code(data['code']):
+        if data.get('code') and PaymentPlanService.check_unique_code(data['code']):
             raise ValidationError(_("mutation.payment_plan_code_duplicated"))
 
     class Input(PaymentPlanInputType):
