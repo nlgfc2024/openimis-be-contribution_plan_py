@@ -1,10 +1,11 @@
 from django.contrib.contenttypes.models import ContentType
 
 from core.gql.gql_mutations import DeleteInputType
+from core.code_generation import generate_unique_year_code
 from core.gql.gql_mutations.base_mutation import BaseMutation, BaseDeleteMutation, BaseReplaceMutation, \
     BaseHistoryModelCreateMutationMixin, BaseHistoryModelUpdateMutationMixin, \
     BaseHistoryModelDeleteMutationMixin, BaseHistoryModelReplaceMutationMixin
-from contribution_plan.services import PaymentPlan as PaymentPlanService, generate_unique_payment_plan_code
+from contribution_plan.services import PaymentPlan as PaymentPlanService
 from contribution_plan.gql.gql_mutations import PaymentPlanInputType, PaymentPlanUpdateInputType, \
     PaymentPlanReplaceInputType
 from contribution_plan.apps import ContributionPlanConfig
@@ -22,7 +23,7 @@ class CreatePaymentPlanMutation(BaseHistoryModelCreateMutationMixin, BaseMutatio
     @classmethod
     def create_object(cls, user, object_data):
         if not object_data.get('code'):
-            object_data['code'] = generate_unique_payment_plan_code(cls._model)
+            object_data['code'] = generate_unique_year_code(cls._model, {"is_deleted": False})
         benefit_plan_type__model = object_data.pop('benefit_plan_type__model', None)
         if benefit_plan_type__model:
             content_type = ContentType.objects.get(model=benefit_plan_type__model.lower())
