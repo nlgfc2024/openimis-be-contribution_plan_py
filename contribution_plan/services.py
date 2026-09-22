@@ -3,6 +3,7 @@ import json
 from django.core.serializers.json import DjangoJSONEncoder
 from django.contrib.auth.models import AnonymousUser
 from django.forms.models import model_to_dict
+from core.code_generation import generate_unique_year_code
 from contribution_plan.models import ContributionPlan as ContributionPlanModel, ContributionPlanBundle as ContributionPlanBundleModel, \
     ContributionPlanBundleDetails as ContributionPlanBundleDetailsModel, PaymentPlan as PaymentPlanModel
 
@@ -256,6 +257,11 @@ class PaymentPlan(object):
     @check_authentication
     def create(self, payment_plan):
         try:
+            if not payment_plan.get('code'):
+                payment_plan = {
+                    **payment_plan,
+                    'code': generate_unique_year_code(PaymentPlanModel, {"is_deleted": False}),
+                }
             pp = PaymentPlanModel(**payment_plan)
             pp.save(user=self.user)
             uuid_string = str(pp.id)
