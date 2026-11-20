@@ -2,10 +2,12 @@ import json
 
 from django.core.serializers.json import DjangoJSONEncoder
 from django.contrib.auth.models import AnonymousUser
+from django.core.exceptions import PermissionDenied
 from django.forms.models import model_to_dict
 from core.code_generation import generate_unique_year_code
 from contribution_plan.models import ContributionPlan as ContributionPlanModel, ContributionPlanBundle as ContributionPlanBundleModel, \
     ContributionPlanBundleDetails as ContributionPlanBundleDetailsModel, PaymentPlan as PaymentPlanModel
+from contribution_plan.mixins import resolve_payment_plan_reference
 
 
 def check_authentication(function):
@@ -246,7 +248,9 @@ class PaymentPlan(object):
     @check_authentication
     def get_by_id(self, by_payment_plan):
         try:
-            pp = PaymentPlanModel.objects.get(id=by_payment_plan.id)
+            pp = PaymentPlanModel.get_queryset(
+                PaymentPlanModel.objects.all(), self.user,
+            ).get(id=by_payment_plan.id)
             uuid_string = str(pp.id)
             dict_representation = model_to_dict(pp)
             dict_representation["id"], dict_representation["uuid"] = (str(uuid_string), str(uuid_string))
@@ -257,11 +261,20 @@ class PaymentPlan(object):
     @check_authentication
     def create(self, payment_plan):
         try:
+            payment_plan = dict(payment_plan)
             if not payment_plan.get('code'):
                 payment_plan = {
                     **payment_plan,
                     'code': generate_unique_year_code(PaymentPlanModel, {"is_deleted": False}),
                 }
+            content_type, benefit_plan_id = resolve_payment_plan_reference(
+                self.user,
+                payment_plan,
+                default_product='benefit_plan_type' not in payment_plan,
+            )
+            payment_plan.pop('benefit_plan_type__model', None)
+            payment_plan['benefit_plan_type'] = content_type
+            payment_plan['benefit_plan_id'] = benefit_plan_id
             pp = PaymentPlanModel(**payment_plan)
             pp.save(user=self.user)
             uuid_string = str(pp.id)
@@ -274,7 +287,18 @@ class PaymentPlan(object):
     @check_authentication
     def update(self, payment_plan):
         try:
-            updated_pp = PaymentPlanModel.objects.filter(id=payment_plan['id']).first()
+            payment_plan = dict(payment_plan)
+            updated_pp = PaymentPlanModel.get_queryset(
+                PaymentPlanModel.objects.all(), self.user,
+            ).filter(id=payment_plan['id']).first()
+            if updated_pp is None:
+                raise PermissionDenied("Payment Plan access is required.")
+            content_type, benefit_plan_id = resolve_payment_plan_reference(
+                self.user, payment_plan, current=updated_pp,
+            )
+            payment_plan.pop('benefit_plan_type__model', None)
+            payment_plan['benefit_plan_type'] = content_type
+            payment_plan['benefit_plan_id'] = benefit_plan_id
             [setattr(updated_pp, key, payment_plan[key]) for key in payment_plan]
             updated_pp.save(user=self.user)
             uuid_string = str(updated_pp.id)
@@ -287,7 +311,11 @@ class PaymentPlan(object):
     @check_authentication
     def delete(self, payment_plan):
         try:
-            pp_to_delete = PaymentPlanModel.objects.filter(id=payment_plan['id']).first()
+            pp_to_delete = PaymentPlanModel.get_queryset(
+                PaymentPlanModel.objects.all(), self.user,
+            ).filter(id=payment_plan['id']).first()
+            if pp_to_delete is None:
+                raise PermissionDenied("Payment Plan access is required.")
             pp_to_delete.delete(username=self.user.username)
             return {
                 "success": True,
@@ -300,7 +328,18 @@ class PaymentPlan(object):
     @check_authentication
     def replace(self, payment_plan):
         try:
-            pp_to_replace = PaymentPlanModel.objects.filter(id=payment_plan['uuid']).first()
+            payment_plan = dict(payment_plan)
+            pp_to_replace = PaymentPlanModel.get_queryset(
+                PaymentPlanModel.objects.all(), self.user,
+            ).filter(id=payment_plan['uuid']).first()
+            if pp_to_replace is None:
+                raise PermissionDenied("Payment Plan access is required.")
+            content_type, benefit_plan_id = resolve_payment_plan_reference(
+                self.user, payment_plan, current=pp_to_replace,
+            )
+            payment_plan.pop('benefit_plan_type__model', None)
+            payment_plan['benefit_plan_type'] = content_type
+            payment_plan['benefit_plan_id'] = benefit_plan_id
             pp_to_replace.replace_object(data=payment_plan, username=self.user.username)
             uuid_string = str(pp_to_replace.id)
             dict_representation = model_to_dict(pp_to_replace)
@@ -316,8 +355,10 @@ class PaymentPlan(object):
         }
 
     @staticmethod
-    def check_unique_code(code, uuid=None):
+    def check_unique_code(code, uuid=None, user=None):
         qs = PaymentPlanModel.objects.filter(code=code, is_deleted=False)
+        if user is not None:
+            qs = PaymentPlanModel.get_queryset(qs, user)
         if uuid:
             qs = qs.exclude(id=uuid)
         if qs:
