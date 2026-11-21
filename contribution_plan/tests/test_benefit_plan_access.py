@@ -4,12 +4,16 @@ from uuid import uuid4
 
 import graphene
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied, ValidationError
 from django.test import RequestFactory, TestCase, override_settings
 from graphql_relay import to_global_id
 
 from core.models import MutationLog
-from core.test_helpers import create_test_interactive_user, create_test_role
+from core.test_helpers import (
+    create_test_interactive_user,
+    create_test_language,
+    create_test_role,
+)
 from product.test_helpers import create_test_product
 from social_protection.apps import SocialProtectionConfig
 from social_protection.models import BenefitPlan, UserBenefitPlanAccess
@@ -21,7 +25,11 @@ from contribution_plan.gql.gql_mutations.payment_plan_mutations import (
     ReplacePaymentPlanMutation,
     UpdatePaymentPlanMutation,
 )
-from contribution_plan.mixins import resolve_payment_plan_reference
+from contribution_plan.mixins import (
+    filter_payment_plans_by_benefit_plan,
+    require_payment_plan_access,
+    resolve_payment_plan_reference,
+)
 from contribution_plan.models import PaymentPlan
 from contribution_plan.schema import (
     Mutation as ContributionPlanMutation,
@@ -38,6 +46,7 @@ class Query(ContributionPlanQuery, graphene.ObjectType):
 class PaymentPlanBenefitPlanAccessTest(TestCase):
     @classmethod
     def setUpTestData(cls):
+        create_test_language()
         cls.admin = create_test_interactive_user(username="track06-admin")
         role = create_test_role(
             perm_names=[
@@ -194,6 +203,78 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
                 pk=self.payment_plan_b.pk,
             ).exists()
         )
+
+    def test_feature_disabled_preserves_null_target_update_and_replacement(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+        null_target = PaymentPlan(
+            code="T06-NULL-TARGET",
+            name="Null target",
+            calculation=uuid4(),
+            benefit_plan_type=None,
+            benefit_plan_id=None,
+            periodicity=1,
+        )
+        null_target.save(username=self.admin.username)
+        service = PaymentPlanService(self.reader)
+
+        updated = service.update({
+            "id": null_target.pk,
+            "name": "Null target updated",
+            "benefit_plan_type": None,
+            "benefit_plan_id": None,
+        })
+        self.assertTrue(updated["success"], updated)
+        null_target.refresh_from_db()
+        self.assertIsNone(null_target.benefit_plan_type)
+        self.assertIsNone(null_target.benefit_plan_id)
+
+        replaced = service.replace({
+            "uuid": null_target.pk,
+            "name": "Null target replacement",
+            "benefit_plan_type": None,
+            "benefit_plan_id": None,
+        })
+        self.assertTrue(replaced["success"], replaced)
+        replacement = PaymentPlan.objects.get(pk=replaced["uuid_new_object"])
+        self.assertIsNone(replacement.benefit_plan_type)
+        self.assertIsNone(replacement.benefit_plan_id)
+
+    def test_optional_social_protection_uses_legacy_path_without_shared_import(self):
+        queryset = PaymentPlan.objects.filter(is_deleted=False)
+        with patch(
+            "contribution_plan.mixins.apps.is_installed",
+            return_value=False,
+        ), patch(
+            "contribution_plan.mixins._shared_benefit_plan_access_helpers",
+            side_effect=AssertionError("shared helper must not be imported"),
+        ):
+            self.assertIs(
+                filter_payment_plans_by_benefit_plan(queryset, self.reader),
+                queryset,
+            )
+            content_type, object_id = resolve_payment_plan_reference(
+                self.reader,
+                {
+                    "benefit_plan_type": self.product_type,
+                    "benefit_plan_id": self.product.pk,
+                },
+            )
+            require_payment_plan_access(self.reader, self.legacy_payment_plan)
+
+        self.assertEqual(content_type, self.product_type)
+        self.assertEqual(object_id, self.product.pk)
+
+    def test_enabled_mode_fails_closed_without_shared_authorization_service(self):
+        with patch(
+            "contribution_plan.mixins._shared_benefit_plan_access_helpers",
+            side_effect=ImproperlyConfigured("shared service unavailable"),
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                filter_payment_plans_by_benefit_plan(
+                    PaymentPlan.objects.all(), self.reader,
+                )
+            with self.assertRaises(ImproperlyConfigured):
+                require_payment_plan_access(self.reader, self.payment_plan_a)
 
     def test_service_reads_and_mutations_reject_unauthorized_original_plan(self):
         service = PaymentPlanService(self.reader)
@@ -389,18 +470,18 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
                 },
             )
 
-    def test_code_validation_does_not_probe_hidden_payment_plans(self):
-        with self.permissions():
-            result = PaymentPlanService.check_unique_code(
-                self.payment_plan_b.code,
-                user=self.reader,
-            )
-        self.assertEqual(result, [])
-
-        self.add_plan_b_access()
+    def test_code_validation_is_global_across_hidden_payment_plans(self):
         with self.permissions():
             result = PaymentPlanService.check_unique_code(
                 self.payment_plan_b.code,
                 user=self.reader,
             )
         self.assertTrue(result)
+
+        with self.permissions(), self.assertRaisesRegex(
+            ValidationError, "payment_plan_code_duplicated",
+        ):
+            CreatePaymentPlanMutation._validate_mutation(
+                self.reader,
+                code=self.payment_plan_b.code,
+            )
