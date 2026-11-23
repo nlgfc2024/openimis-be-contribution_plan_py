@@ -2,6 +2,7 @@ from django.conf import settings
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import (
+    ImproperlyConfigured,
     ObjectDoesNotExist,
     PermissionDenied,
     ValidationError,
@@ -12,11 +13,34 @@ from graphql import ResolveInfo
 from uuid import UUID
 
 from core.models import HistoryModelManager
-from social_protection.benefit_plan_access import (
-    benefit_plan_access_control_enabled,
-    get_accessible_benefit_plan_ids,
-    require_benefit_plan_access,
-)
+
+
+def _shared_access_helpers():
+    """Load optional shared authorization only when enforcement requires it."""
+    if not apps.is_installed('social_protection'):
+        return False, None, None
+    try:
+        from social_protection.benefit_plan_access import (
+            benefit_plan_access_control_enabled,
+        )
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "Social Protection is installed, but its shared Benefit Plan "
+            "authorization service is unavailable."
+        ) from exc
+    if not benefit_plan_access_control_enabled():
+        return False, None, None
+    try:
+        from social_protection.benefit_plan_access import (
+            get_accessible_benefit_plan_ids,
+            require_benefit_plan_access,
+        )
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "Benefit Plan access control is enabled, but the shared Social "
+            "Protection authorization helpers are unavailable."
+        ) from exc
+    return True, get_accessible_benefit_plan_ids, require_benefit_plan_access
 
 
 class GenericPlanManager(HistoryModelManager):
@@ -80,7 +104,8 @@ def _validated_content_type(content_type=None, model_name=None, default_product=
 
 def resolve_payment_plan_reference(user, data, current=None, default_product=False):
     """Validate and normalize a Payment Plan's polymorphic target."""
-    if not benefit_plan_access_control_enabled():
+    access_enabled, _, require_benefit_plan_access = _shared_access_helpers()
+    if not access_enabled:
         return _resolve_legacy_payment_plan_reference(
             data,
             current=current,
@@ -153,7 +178,8 @@ def _resolve_legacy_payment_plan_reference(data, current=None, default_product=F
 def require_payment_plan_access(user, payment_plan):
     if payment_plan is None:
         raise PermissionDenied("Payment Plan access is required.")
-    if not benefit_plan_access_control_enabled():
+    access_enabled, _, require_benefit_plan_access = _shared_access_helpers()
+    if not access_enabled:
         return
     benefit_plan_type = social_protection_benefit_plan_content_type()
     if benefit_plan_type is None:
@@ -170,7 +196,8 @@ def require_payment_plan_access(user, payment_plan):
 
 def filter_payment_plans_by_benefit_plan(queryset, user):
     """Scope Social Protection Payment Plans while retaining legacy Product plans."""
-    if not benefit_plan_access_control_enabled():
+    access_enabled, get_accessible_benefit_plan_ids, _ = _shared_access_helpers()
+    if not access_enabled:
         return queryset
     accessible_ids = get_accessible_benefit_plan_ids(user)
     if accessible_ids is None:

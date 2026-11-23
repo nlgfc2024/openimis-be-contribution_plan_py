@@ -1,10 +1,11 @@
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
 import graphene
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied, ValidationError
 from django.test import RequestFactory, TestCase, override_settings
 from graphql_relay import to_global_id
 
@@ -337,9 +338,44 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
         self.assertEqual(content_type, self.product_type)
         self.assertEqual(object_id, self.product.pk)
 
+    def test_absent_social_protection_preserves_legacy_product_behavior(self):
+        queryset = PaymentPlan.objects.filter(is_deleted=False)
+        with patch(
+            "contribution_plan.mixins.apps.is_installed",
+            return_value=False,
+        ), patch.dict(
+            sys.modules,
+            {"social_protection.benefit_plan_access": None},
+        ):
+            self.assertIs(
+                filter_payment_plans_by_benefit_plan(queryset, self.reader),
+                queryset,
+            )
+            require_payment_plan_access(self.reader, self.legacy_payment_plan)
+            content_type, object_id = resolve_payment_plan_reference(
+                self.reader,
+                {
+                    "benefit_plan_type": self.product_type,
+                    "benefit_plan_id": self.product.pk,
+                },
+            )
+
+        self.assertEqual(content_type, self.product_type)
+        self.assertEqual(object_id, self.product.pk)
+
+    def test_enabled_mode_fails_closed_without_shared_authorization(self):
+        with patch.dict(
+            sys.modules,
+            {"social_protection.benefit_plan_access": None},
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                filter_payment_plans_by_benefit_plan(
+                    PaymentPlan.objects.all(), self.reader,
+                )
+
     def test_enabled_mode_propagates_shared_authorization_denials(self):
         with patch(
-            "contribution_plan.mixins.get_accessible_benefit_plan_ids",
+            "social_protection.benefit_plan_access.get_accessible_benefit_plan_ids",
             side_effect=PermissionDenied("denied"),
         ):
             with self.assertRaises(PermissionDenied):
@@ -347,7 +383,7 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
                     PaymentPlan.objects.all(), self.reader,
                 )
         with patch(
-            "contribution_plan.mixins.require_benefit_plan_access",
+            "social_protection.benefit_plan_access.require_benefit_plan_access",
             side_effect=PermissionDenied("denied"),
         ):
             with self.assertRaises(PermissionDenied):
