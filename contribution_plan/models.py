@@ -5,7 +5,11 @@ from django.db import models
 from core import models as core_models, fields
 from core.signals import Signal
 from graphql import ResolveInfo
-from contribution_plan.mixins import GenericPlanQuerysetMixin, GenericPlanManager
+from contribution_plan.mixins import (
+    GenericPlanQuerysetMixin,
+    GenericPlanManager,
+    filter_payment_plans_by_benefit_plan,
+)
 
 
 class GenericPlan(GenericPlanQuerysetMixin, core_models.HistoryBusinessModel):
@@ -70,6 +74,13 @@ class ContributionPlan(GenericPlan):
         db_table = 'tblContributionPlan'
 
 class PaymentPlan(GenericPlan):
+
+    @classmethod
+    def get_queryset(cls, queryset, user):
+        queryset = super().get_queryset(queryset, user)
+        if isinstance(user, ResolveInfo):
+            user = user.context.user
+        return filter_payment_plans_by_benefit_plan(queryset, user)
 
     class Meta:
         db_table = 'tblPaymentPlan'

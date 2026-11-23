@@ -173,6 +173,7 @@ class Query(graphene.ObjectType):
             query = model.history.filter(*filters).all().as_instances()
         else:
             query = model.objects.filter(*filters).all()
+        query = model.get_queryset(query, info)
         return gql_optimizer.query(query, info)
 
     def resolve_validate_contribution_plan_code(self, info, **kwargs):
@@ -184,7 +185,10 @@ class Query(graphene.ObjectType):
         return False if errors else True
 
     def resolve_validate_payment_plan_code(self, info, **kwargs):
-        errors = PaymentPlanService.check_unique_code(code=kwargs['payment_plan_code'])
+        errors = PaymentPlanService.check_unique_code(
+            code=kwargs['payment_plan_code'],
+            user=info.context.user,
+        )
         return False if errors else True
 
 

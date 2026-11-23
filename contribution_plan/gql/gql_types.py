@@ -6,6 +6,7 @@ from contribution_plan.apps import ContributionPlanConfig
 from contribution_plan.gql.util import model_obj_to_json
 from contribution_plan.models import ContributionPlanBundle, ContributionPlan, \
     ContributionPlanBundleDetails, PaymentPlan
+from contribution_plan.mixins import require_payment_plan_access
 from core import ExtendedConnection, prefix_filterset
 from graphene_django import DjangoObjectType
 from django.utils.translation import gettext as _
@@ -127,18 +128,21 @@ class PaymentPlanGQLType(DjangoObjectType):
     def resolve_benefit_plan_type(root, info):
         if not info.context.user.has_perms(ContributionPlanConfig.gql_query_paymentplan_perms):
             raise PermissionDenied(_("unauthorized"))
+        require_payment_plan_access(info.context.user, root)
         return root.benefit_plan_type.id
 
     @staticmethod
     def resolve_benefit_plan_type_name(root, info):
         if not info.context.user.has_perms(ContributionPlanConfig.gql_query_contributionplan_perms):
             raise PermissionDenied(_("unauthorized"))
+        require_payment_plan_access(info.context.user, root)
         return root.benefit_plan_type.name
 
     @staticmethod
     def resolve_benefit_plan(root, info):
         if not info.context.user.has_perms(ContributionPlanConfig.gql_query_contributionplan_perms):
             raise PermissionDenied(_("unauthorized"))
+        require_payment_plan_access(info.context.user, root)
         return model_obj_to_json(root.benefit_plan)
 
     class Meta:
