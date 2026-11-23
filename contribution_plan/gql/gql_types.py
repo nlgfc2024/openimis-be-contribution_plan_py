@@ -133,14 +133,14 @@ class PaymentPlanGQLType(DjangoObjectType):
 
     @staticmethod
     def resolve_benefit_plan_type_name(root, info):
-        if not info.context.user.has_perms(ContributionPlanConfig.gql_query_paymentplan_perms):
+        if not info.context.user.has_perms(ContributionPlanConfig.gql_query_contributionplan_perms):
             raise PermissionDenied(_("unauthorized"))
         require_payment_plan_access(info.context.user, root)
         return root.benefit_plan_type.name
 
     @staticmethod
     def resolve_benefit_plan(root, info):
-        if not info.context.user.has_perms(ContributionPlanConfig.gql_query_paymentplan_perms):
+        if not info.context.user.has_perms(ContributionPlanConfig.gql_query_contributionplan_perms):
             raise PermissionDenied(_("unauthorized"))
         require_payment_plan_access(info.context.user, root)
         return model_obj_to_json(root.benefit_plan)

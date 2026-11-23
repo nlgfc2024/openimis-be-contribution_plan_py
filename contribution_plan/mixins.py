@@ -1,7 +1,12 @@
 from django.conf import settings
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ImproperlyConfigured, PermissionDenied, ValidationError
+from django.core.exceptions import (
+    ImproperlyConfigured,
+    ObjectDoesNotExist,
+    PermissionDenied,
+    ValidationError,
+)
 from django.db import models
 from django.db.models import Q
 from graphql import ResolveInfo
@@ -163,10 +168,13 @@ def _resolve_legacy_payment_plan_reference(data, current=None, default_product=F
         try:
             content_type = ContentType.objects.get(model=str(model_name).lower())
             content_type.get_object_for_this_type(pk=object_id)
-        except (ContentType.DoesNotExist, TypeError, ValueError) as exc:
+        except (
+            ContentType.DoesNotExist,
+            ObjectDoesNotExist,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise ValidationError("Referenced Payment Plan target does not exist.") from exc
-    elif content_type is None and current is None and default_product:
-        content_type = _supported_payment_plan_content_types()['product']
 
     return content_type, object_id
 

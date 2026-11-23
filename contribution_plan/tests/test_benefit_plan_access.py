@@ -25,6 +25,7 @@ from contribution_plan.gql.gql_mutations.payment_plan_mutations import (
     ReplacePaymentPlanMutation,
     UpdatePaymentPlanMutation,
 )
+from contribution_plan.gql.gql_types import PaymentPlanGQLType
 from contribution_plan.mixins import (
     filter_payment_plans_by_benefit_plan,
     require_payment_plan_access,
@@ -238,6 +239,84 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
         replacement = PaymentPlan.objects.get(pk=replaced["uuid_new_object"])
         self.assertIsNone(replacement.benefit_plan_type)
         self.assertIsNone(replacement.benefit_plan_id)
+
+    def test_feature_disabled_preserves_null_target_on_create(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+
+        payment_plan = CreatePaymentPlanMutation.create_object(
+            self.reader,
+            {
+                "code": "T06-NULL-CREATE",
+                "name": "Null target create",
+                "calculation": uuid4(),
+                "periodicity": 1,
+            },
+        )
+
+        self.assertIsNone(payment_plan.benefit_plan_type)
+        self.assertIsNone(payment_plan.benefit_plan_id)
+
+    def test_feature_disabled_missing_legacy_target_raises_validation_error(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+        missing_product_id = self.product.pk + 1000000
+
+        with self.assertRaisesRegex(
+            ValidationError,
+            "Referenced Payment Plan target does not exist",
+        ):
+            resolve_payment_plan_reference(
+                self.reader,
+                {
+                    "benefit_plan_type__model": "product",
+                    "benefit_plan_id": missing_product_id,
+                },
+            )
+
+    def test_payment_plan_related_resolvers_keep_contribution_plan_permissions_and_access(self):
+        info = SimpleNamespace(context=SimpleNamespace(user=self.reader))
+
+        with patch.object(
+            type(self.reader),
+            "has_perms",
+            side_effect=lambda perms: (
+                perms == ContributionPlanConfig.gql_query_contributionplan_perms
+            ),
+        ):
+            self.assertEqual(
+                PaymentPlanGQLType.resolve_benefit_plan_type_name(
+                    self.payment_plan_a,
+                    info,
+                ),
+                self.benefit_plan_type.name,
+            )
+            self.assertIsNotNone(
+                PaymentPlanGQLType.resolve_benefit_plan(
+                    self.payment_plan_a,
+                    info,
+                )
+            )
+            with self.assertRaises(PermissionDenied):
+                PaymentPlanGQLType.resolve_benefit_plan_type_name(
+                    self.payment_plan_b,
+                    info,
+                )
+            with self.assertRaises(PermissionDenied):
+                PaymentPlanGQLType.resolve_benefit_plan(
+                    self.payment_plan_b,
+                    info,
+                )
+
+        with patch.object(type(self.reader), "has_perms", return_value=False):
+            with self.assertRaises(PermissionDenied):
+                PaymentPlanGQLType.resolve_benefit_plan_type_name(
+                    self.payment_plan_a,
+                    info,
+                )
+            with self.assertRaises(PermissionDenied):
+                PaymentPlanGQLType.resolve_benefit_plan(
+                    self.payment_plan_a,
+                    info,
+                )
 
     def test_optional_social_protection_uses_legacy_path_without_shared_import(self):
         queryset = PaymentPlan.objects.filter(is_deleted=False)
