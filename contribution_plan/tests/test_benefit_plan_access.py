@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -318,19 +319,39 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
                     info,
                 )
 
-    def test_optional_social_protection_uses_legacy_path_without_shared_import(self):
+    def test_feature_off_preserves_legacy_product_payment_plan(self):
+        SocialProtectionConfig.enable_benefit_plan_access_control = False
+        queryset = PaymentPlan.objects.filter(is_deleted=False)
+        self.assertIs(
+            filter_payment_plans_by_benefit_plan(queryset, self.reader),
+            queryset,
+        )
+        content_type, object_id = resolve_payment_plan_reference(
+            self.reader,
+            {
+                "benefit_plan_type": self.product_type,
+                "benefit_plan_id": self.product.pk,
+            },
+        )
+        require_payment_plan_access(self.reader, self.legacy_payment_plan)
+
+        self.assertEqual(content_type, self.product_type)
+        self.assertEqual(object_id, self.product.pk)
+
+    def test_absent_social_protection_preserves_legacy_product_behavior(self):
         queryset = PaymentPlan.objects.filter(is_deleted=False)
         with patch(
             "contribution_plan.mixins.apps.is_installed",
             return_value=False,
-        ), patch(
-            "contribution_plan.mixins._shared_benefit_plan_access_helpers",
-            side_effect=AssertionError("shared helper must not be imported"),
+        ), patch.dict(
+            sys.modules,
+            {"social_protection.benefit_plan_access": None},
         ):
             self.assertIs(
                 filter_payment_plans_by_benefit_plan(queryset, self.reader),
                 queryset,
             )
+            require_payment_plan_access(self.reader, self.legacy_payment_plan)
             content_type, object_id = resolve_payment_plan_reference(
                 self.reader,
                 {
@@ -338,21 +359,34 @@ class PaymentPlanBenefitPlanAccessTest(TestCase):
                     "benefit_plan_id": self.product.pk,
                 },
             )
-            require_payment_plan_access(self.reader, self.legacy_payment_plan)
 
         self.assertEqual(content_type, self.product_type)
         self.assertEqual(object_id, self.product.pk)
 
-    def test_enabled_mode_fails_closed_without_shared_authorization_service(self):
-        with patch(
-            "contribution_plan.mixins._shared_benefit_plan_access_helpers",
-            side_effect=ImproperlyConfigured("shared service unavailable"),
+    def test_enabled_mode_fails_closed_without_shared_authorization(self):
+        with patch.dict(
+            sys.modules,
+            {"social_protection.benefit_plan_access": None},
         ):
             with self.assertRaises(ImproperlyConfigured):
                 filter_payment_plans_by_benefit_plan(
                     PaymentPlan.objects.all(), self.reader,
                 )
-            with self.assertRaises(ImproperlyConfigured):
+
+    def test_enabled_mode_propagates_shared_authorization_denials(self):
+        with patch(
+            "social_protection.benefit_plan_access.get_accessible_benefit_plan_ids",
+            side_effect=PermissionDenied("denied"),
+        ):
+            with self.assertRaises(PermissionDenied):
+                filter_payment_plans_by_benefit_plan(
+                    PaymentPlan.objects.all(), self.reader,
+                )
+        with patch(
+            "social_protection.benefit_plan_access.require_benefit_plan_access",
+            side_effect=PermissionDenied("denied"),
+        ):
+            with self.assertRaises(PermissionDenied):
                 require_payment_plan_access(self.reader, self.payment_plan_a)
 
     def test_service_reads_and_mutations_reject_unauthorized_original_plan(self):

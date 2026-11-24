@@ -15,6 +15,34 @@ from uuid import UUID
 from core.models import HistoryModelManager
 
 
+def _shared_access_helpers():
+    """Load optional shared authorization only when enforcement requires it."""
+    if not apps.is_installed('social_protection'):
+        return False, None, None
+    try:
+        from social_protection.benefit_plan_access import (
+            benefit_plan_access_control_enabled,
+        )
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "Social Protection is installed, but its shared Benefit Plan "
+            "authorization service is unavailable."
+        ) from exc
+    if not benefit_plan_access_control_enabled():
+        return False, None, None
+    try:
+        from social_protection.benefit_plan_access import (
+            get_accessible_benefit_plan_ids,
+            require_benefit_plan_access,
+        )
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            "Benefit Plan access control is enabled, but the shared Social "
+            "Protection authorization helpers are unavailable."
+        ) from exc
+    return True, get_accessible_benefit_plan_ids, require_benefit_plan_access
+
+
 class GenericPlanManager(HistoryModelManager):
     def filter(self, *args, **kwargs):
         keys = [x for x in kwargs if "itemsvc" in x]
@@ -55,38 +83,6 @@ def social_protection_benefit_plan_content_type():
     return _supported_payment_plan_content_types().get('benefitplan')
 
 
-def benefit_plan_access_control_enabled():
-    """Read the optional Social Protection flag without importing it at load time."""
-    if not apps.is_installed('social_protection'):
-        return False
-    try:
-        from social_protection.apps import SocialProtectionConfig
-    except ImportError:
-        return False
-    return bool(
-        getattr(
-            SocialProtectionConfig,
-            'enable_benefit_plan_access_control',
-            False,
-        )
-    )
-
-
-def _shared_benefit_plan_access_helpers():
-    """Load Track 01 lazily and fail closed whenever enforcement is enabled."""
-    try:
-        from social_protection.benefit_plan_access import (
-            get_accessible_benefit_plan_ids,
-            require_benefit_plan_access,
-        )
-    except ImportError as exc:
-        raise ImproperlyConfigured(
-            "Benefit Plan access control is enabled, but the shared Social "
-            "Protection authorization service is unavailable."
-        ) from exc
-    return get_accessible_benefit_plan_ids, require_benefit_plan_access
-
-
 def _validated_content_type(content_type=None, model_name=None, default_product=False):
     supported = _supported_payment_plan_content_types()
     if model_name is not None:
@@ -108,7 +104,8 @@ def _validated_content_type(content_type=None, model_name=None, default_product=
 
 def resolve_payment_plan_reference(user, data, current=None, default_product=False):
     """Validate and normalize a Payment Plan's polymorphic target."""
-    if not benefit_plan_access_control_enabled():
+    access_enabled, _, require_benefit_plan_access = _shared_access_helpers()
+    if not access_enabled:
         return _resolve_legacy_payment_plan_reference(
             data,
             current=current,
@@ -137,7 +134,6 @@ def resolve_payment_plan_reference(user, data, current=None, default_product=Fal
             object_id = str(UUID(str(object_id)))
         except (TypeError, ValueError, AttributeError):
             raise ValidationError("Social Protection Benefit Plan ID must be a valid UUID.")
-        _, require_benefit_plan_access = _shared_benefit_plan_access_helpers()
         require_benefit_plan_access(user, object_id)
     else:
         object_id = str(object_id)
@@ -182,27 +178,23 @@ def _resolve_legacy_payment_plan_reference(data, current=None, default_product=F
 def require_payment_plan_access(user, payment_plan):
     if payment_plan is None:
         raise PermissionDenied("Payment Plan access is required.")
-    if not benefit_plan_access_control_enabled():
+    access_enabled, _, require_benefit_plan_access = _shared_access_helpers()
+    if not access_enabled:
         return
     benefit_plan_type = social_protection_benefit_plan_content_type()
-    if benefit_plan_type is None:
-        raise ImproperlyConfigured(
-            "Benefit Plan access control is enabled without Social Protection."
-        )
     if payment_plan.benefit_plan_type_id == benefit_plan_type.pk:
         try:
             benefit_plan_id = str(UUID(str(payment_plan.benefit_plan_id)))
         except (TypeError, ValueError, AttributeError):
             raise PermissionDenied("Payment Plan access is required.")
-        _, require_benefit_plan_access = _shared_benefit_plan_access_helpers()
         require_benefit_plan_access(user, benefit_plan_id)
 
 
 def filter_payment_plans_by_benefit_plan(queryset, user):
     """Scope Social Protection Payment Plans while retaining legacy Product plans."""
-    if not benefit_plan_access_control_enabled():
+    access_enabled, get_accessible_benefit_plan_ids, _ = _shared_access_helpers()
+    if not access_enabled:
         return queryset
-    get_accessible_benefit_plan_ids, _ = _shared_benefit_plan_access_helpers()
     accessible_ids = get_accessible_benefit_plan_ids(user)
     if accessible_ids is None:
         return queryset
