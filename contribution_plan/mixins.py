@@ -182,10 +182,6 @@ def require_payment_plan_access(user, payment_plan):
     if not access_enabled:
         return
     benefit_plan_type = social_protection_benefit_plan_content_type()
-    if benefit_plan_type is None:
-        raise PermissionDenied(
-            "Benefit Plan access control is enabled without Social Protection."
-        )
     if payment_plan.benefit_plan_type_id == benefit_plan_type.pk:
         try:
             benefit_plan_id = str(UUID(str(payment_plan.benefit_plan_id)))
